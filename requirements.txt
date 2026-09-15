@@ -1,0 +1,7 @@
+torch>=2.0
+monai>=1.4
+numpy
+scipy
+h5py
+scikit-image
+lpips

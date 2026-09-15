@@ -6,26 +6,37 @@ This repository provides MoPo-I2V, a motion-first image-to-video framework for 4
 
 ## Repository Structure
 
-- `train_motion.py`: training of the motion-posterior generator
-- `train_metamorphosis.py`: training of the pixel-space generative bridge
-- `inference.py`: image-to-video generation from a single volume
-- `evaluate.py`: metric evaluation (PSNR, LPIPS, FVD, motion accuracy)
-- `models/`, `losses/`: model and loss components
-- `data/`: dataset and experiment outputs
+Motion Generation (Stage 1)
+
+- `motion/arch.py`: non-autonomous flow-map diffusion network (MAISI latent U-Net backbone + temporal attention + LoRA + phase / amplitude conditioning)
+- `motion/cocycle.py`: composition-consistency (cocycle) loss on flow-map pairs
+- `motion/spatial.py`: displacement-field convention, warp and composition operators
+- `motion/data.py`: window dataset, conditioning and rectified-flow sampling with classifier-free guidance
+- `train_motion.py`: Stage-1 training
+- `sample_motion.py`: sample N flow maps per case from the motion posterior
+
+Motion-Posterior Metamorphosis (Stage 2)
+
+- `transport/bspline.py`: 3D cubic B-spline transport of the first volume along a flow map
+- `build_posterior_cache.py`: transports along the posterior samples and the posterior mean, and the pushed-forward uncertainty sigma^2
+- `metamorphosis/unet_g.py`, `train_g.py`, `export_mu.py`: deterministic head G (residual mean, 1/sigma^2-weighted)
+- `metamorphosis/unet_f.py`, `train_f.py`: generative bridge F (flow-matching bridge with uncertainty-guided noise, consistency and adversarial terms)
+- `sample_f.py`: image-to-video inference
+- `evaluate.py`: PSNR / SSIM / LPIPS / motion-magnitude evaluation
 
 ## Usage
 
 ### 1. Environment Setup
 
-Recommended environment:
+- Python 3.10
+- PyTorch >= 2.0, MONAI >= 1.4 (for the MAISI diffusion U-Net and the rectified-flow scheduler)
+- NumPy, SciPy, h5py, scikit-image, lpips
 
-- Python 3.9
-- PyTorch
-- h5py
-- SimpleITK
-- NiBabel
-- SciPy
-- tqdm
+```bash
+pip install -r requirements.txt
+```
+
+The Stage-1 backbone is initialised from the NV-Generate-MR latent diffusion U-Net (`diff_unet_3d_rflow-mr.pt` and `config_network_rflow.json`, available from NVIDIA); the anchor-frame latents `z0` are produced by its VAE.
 
 ### 2. Datasets
 
@@ -36,30 +47,43 @@ Public datasets used in this project:
 
 The remaining dataset (4D cardiac CTA) is private and is not included in this repository.
 
+Each case is stored as `<case_id>.h5` with a dataset `image` of shape `[T, Z, Y, X]` (float32, intensities in `[0, 1]`). Stage-1 training additionally needs a field cache (one `.npz` per case with the teacher displacement fields of each sliding window, the anchor-frame latent and the window conditions; see the docstring of `motion/data.py` for the exact keys).
+
 ### 3. Training
 
-Motion-posterior generator:
+Stage 1, Motion Generation:
 
 ```bash
-python train_motion.py
+python train_motion.py --cache data/field_cache --out runs/motion \
+    --base-ckpt NV-Generate-MR/models/diff_unet_3d_rflow-mr.pt \
+    --base-cfg  NV-Generate-MR/configs/config_network_rflow.json --lam-coc 1.7
+python sample_motion.py --ckpt runs/motion/last.pt --cache data/field_cache --split train \
+    --base-ckpt ... --base-cfg ... --out data/posterior --nseed 5 --w 4
+python build_posterior_cache.py --posterior data/posterior --h5dir data/acdc_h5 --split train --out data/mpm_cache
 ```
 
-Generative bridge:
+Stage 2, Motion-Posterior Metamorphosis:
 
 ```bash
-python train_metamorphosis.py
+python train_g.py --cache data/mpm_cache --out runs/g
+python export_mu.py --run runs/g --cache data/mpm_cache --split train
+python export_mu.py --run runs/g --cache data/mpm_cache --split val
+python train_f.py --cache data/mpm_cache --mu runs/g --out runs/f
 ```
 
 ### 4. Inference
 
 ```bash
-python inference.py
+python sample_motion.py --ckpt runs/motion/last.pt --cache data/field_cache --split test --base-ckpt ... --base-cfg ... --out data/posterior --nseed 5 --w 4
+python build_posterior_cache.py --posterior data/posterior --h5dir data/acdc_h5 --split test --out data/mpm_cache --single-window
+python export_mu.py --run runs/g --cache data/mpm_cache --split test
+python sample_f.py --run runs/f --cache data/mpm_cache --mu runs/g --split test --name mpm --seeds 0,1,2,3,4
 ```
 
 ### 5. Evaluation
 
 ```bash
-python evaluate.py
+python evaluate.py --npz-dir cells/mpm_r0 --h5dir data/acdc_h5 --out results/mpm_r0.json
 ```
 
 ## Citation
