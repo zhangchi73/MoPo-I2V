@@ -94,9 +94,3 @@ Citation information can be added here after the paper is publicly available.
 
 For questions or collaboration, please contact: `zhangc31@mails.neu.edu.cn`
 
-## Acknowledgements
-
-We thank the authors and contributors of the following open-source projects:
-
-- [UVI-Net](https://github.com/jungeun122333/UVI-Net)
-- [VoxelMorph](https://github.com/voxelmorph/voxelmorph)
